@@ -1,0 +1,448 @@
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>FLTRS - Glitch</title>
+    <meta name="description" content="Glitch" />
+    <meta name="author" content="cmichel" />
+
+    <style>
+      html {
+        box-sizing: border-box;
+        height: 100vh;
+      }
+      *,
+      *:before,
+      *:after {
+        box-sizing: inherit;
+        user-select: none;
+      }
+
+      body {
+        width: 100vw;
+        height: 100vh;
+        margin: 0;
+      }
+      canvas {
+        width: 100vw;
+        height: 100vh;
+        display: block;
+        max-width: 100vw;
+        border: none;
+      }
+    </style>
+  </head>
+
+  <body>
+    <canvas id="canvas"></canvas>
+    <script type="text/javascript">
+      var vertexShaderSource = `#version 300 es
+
+// an attribute is an input (in) to a vertex shader.
+// It will receive data from a buffer
+in vec2 a_position;
+in vec2 a_texCoord;
+
+// Used to pass in the resolution of the canvas
+uniform vec2 u_resolution;
+
+// Used to pass the texture coordinates to the fragment shader
+out vec2 v_texCoord;
+
+// all shaders have a main function
+void main() {
+
+  // convert the position from pixels to 0.0 to 1.0
+  vec2 zeroToOne = a_position / u_resolution;
+
+  // convert from 0->1 to 0->2
+  vec2 zeroToTwo = zeroToOne * 2.0;
+
+  // convert from 0->2 to -1->+1 (clipspace)
+  vec2 clipSpace = zeroToTwo - 1.0;
+
+  gl_Position = vec4(clipSpace * vec2(1, -1), 0, 1);
+
+  // pass the texCoord to the fragment shader
+  // The GPU will interpolate this value between points.
+  v_texCoord = a_texCoord;
+}
+`;
+
+      var fragmentShaderSource = `#version 300 es
+
+// fragment shaders dont have a default precision so we need
+// to pick one. highp is a good default. It means "high precision"
+precision highp float;
+
+// our texture
+uniform sampler2D u_image;
+
+// the time
+uniform float u_time;
+
+// the texCoords passed in from the vertex shader.
+in vec2 v_texCoord;
+
+// we need to declare an output for the fragment shader
+out vec4 outColor;
+
+vec3 mod289(vec3 x) {
+  return x - floor(x * (1.0 / 289.0)) * 289.0;
+}
+
+vec2 mod289(vec2 x) {
+  return x - floor(x * (1.0 / 289.0)) * 289.0;
+}
+
+vec3 permute(vec3 x) {
+  return mod289(((x*34.0)+1.0)*x);
+}
+
+float snoise(vec2 v)
+  {
+  const vec4 C = vec4(0.211324865405187,  // (3.0-sqrt(3.0))/6.0
+                      0.366025403784439,  // 0.5*(sqrt(3.0)-1.0)
+                      -0.577350269189626,  // -1.0 + 2.0 * C.x
+                      0.024390243902439); // 1.0 / 41.0
+  // First corner
+  vec2 i  = floor(v + dot(v, C.yy) );
+  vec2 x0 = v -   i + dot(i, C.xx);
+
+  // Other corners
+  vec2 i1;
+  //i1.x = step( x0.y, x0.x ); // x0.x > x0.y ? 1.0 : 0.0
+  //i1.y = 1.0 - i1.x;
+  i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+  // x0 = x0 - 0.0 + 0.0 * C.xx ;
+  // x1 = x0 - i1 + 1.0 * C.xx ;
+  // x2 = x0 - 1.0 + 2.0 * C.xx ;
+  vec4 x12 = x0.xyxy + C.xxzz;
+  x12.xy -= i1;
+
+  // Permutations
+  i = mod289(i); // Avoid truncation effects in permutation
+  vec3 p = permute( permute( i.y + vec3(0.0, i1.y, 1.0 ))
+    + i.x + vec3(0.0, i1.x, 1.0 ));
+
+  vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+  m = m*m ;
+  m = m*m ;
+
+  // Gradients: 41 points uniformly over a line, mapped onto a diamond.
+  // The ring size 17*17 = 289 is close to a multiple of 41 (41*7 = 287)
+
+  vec3 x = 2.0 * fract(p * C.www) - 1.0;
+  vec3 h = abs(x) - 0.5;
+  vec3 ox = floor(x + 0.5);
+  vec3 a0 = x - ox;
+
+  // Normalise gradients implicitly by scaling m
+  // Approximation of: m *= inversesqrt( a0*a0 + h*h );
+  m *= 1.79284291400159 - 0.85373472095314 * ( a0*a0 + h*h );
+
+  // Compute final noise value at P
+  vec3 g;
+  g.x  = a0.x  * x0.x  + h.x  * x0.y;
+  g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+  return 130.0 * dot(m, g);
+}
+
+float rand(vec2 co)
+{
+   return fract(sin(dot(co.xy,vec2(12.9898,78.233))) * 43758.5453);
+}
+
+void main() {
+    // runs from 0.0 to 1.0 on both axis
+    vec2 uv = v_texCoord.xy;
+    float time = u_time * 2.0;
+
+    // Create large, incidental noise waves
+    float noise = max(0.0, snoise(vec2(time, uv.y * 0.3)) - 0.3) * (1.0 / 0.7);
+
+    // Offset by smaller, constant noise waves
+    noise = noise + (snoise(vec2(time*10.0, uv.y * 2.4)) - 0.5) * 0.15;
+
+    // Apply the noise as x displacement for every line
+    float xpos = uv.x - noise * noise * 0.25;
+    outColor = texture(u_image, vec2(xpos, uv.y));
+
+    // Mix in some random interference for lines
+    outColor.rgb = mix(outColor.rgb, vec3(rand(vec2(uv.y * time))), noise * 0.3).rgb;
+
+    // Apply a running line pattern, duration is 8 seconds. sin(0, pi) goes to (0.0, 1.0, 0.0)
+    float line_start_y = mod(0.125 * time, 3.14);
+    line_start_y = sin(line_start_y);
+    if (v_texCoord.y > line_start_y && v_texCoord.y < line_start_y + 0.03 + 0.01 * (0.5 - noise))
+    {
+      // take colors 3% from the right to give a shift effect
+      outColor.rgba = mix(outColor.rgba, texture(u_image, vec2(xpos + 0.03 - noise * 0.03, uv.y)).rgba, 0.8);
+      outColor.g = mix(outColor.r, texture(u_image, vec2(xpos + noise * 0.05, uv.y)).g, 0.5);
+      outColor.b = mix(outColor.r, texture(u_image, vec2(xpos - noise * 0.05, uv.y)).b, 0.5);
+    } else {
+      outColor.g = mix(outColor.r, texture(u_image, vec2(xpos + noise * 0.05, uv.y)).g, 0.6);
+      outColor.b = mix(outColor.r, texture(u_image, vec2(xpos - noise * 0.05, uv.y)).b, 0.6);
+    }
+
+    float interpolation = mod(time, 8.0);
+    float amplifier = 5.0;
+    if(interpolation <= 7.0) {
+      interpolation = interpolation * interpolation / 49.0;
+    } else {
+      interpolation = 8.0 - interpolation;
+    }
+    outColor.rgb = mix(outColor.rgb, texture(u_image, vec2(xpos + noise * 0.05, uv.y)).rgb, amplifier * interpolation);
+}
+`;
+
+      /**
+       * Resize a canvas to match the size its displayed.
+       * @param {HTMLCanvasElement} canvas The canvas to resize.
+       * @param {number} [multiplier] amount to multiply by.
+       *    Pass in window.devicePixelRatio for native pixels.
+       * @return {boolean} true if the canvas was resized.
+       * @memberOf module:webgl-utils
+       */
+      function resizeCanvasToDisplaySize(canvas, multiplier) {
+        multiplier = multiplier || 1;
+        const width = (canvas.clientWidth * multiplier) | 0;
+        const height = (canvas.clientHeight * multiplier) | 0;
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+          return true;
+        }
+        return false;
+      }
+
+      function render(image) {
+        var canvas = document.querySelector("#canvas");
+        var gl = canvas.getContext("webgl2");
+        if (!gl) {
+          return;
+        }
+
+        // setup GLSL program
+        // Create our vertex shader
+        const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+        gl.shaderSource(vertexShader, vertexShaderSource);
+        gl.compileShader(vertexShader);
+
+        // Create our fragment shader
+        const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+        gl.shaderSource(fragmentShader, fragmentShaderSource);
+        gl.compileShader(fragmentShader);
+
+        var program = gl.createProgram();
+        gl.attachShader(program, vertexShader);
+        gl.attachShader(program, fragmentShader);
+        gl.linkProgram(program);
+
+        // look up where the vertex data needs to go.
+        var positionAttributeLocation = gl.getAttribLocation(
+          program,
+          "a_position"
+        );
+        var texCoordAttributeLocation = gl.getAttribLocation(
+          program,
+          "a_texCoord"
+        );
+
+        // lookup uniforms
+        var resolutionLocation = gl.getUniformLocation(program, "u_resolution");
+        var imageLocation = gl.getUniformLocation(program, "u_image");
+        var timeLocation = gl.getUniformLocation(program, "u_time");
+
+        // Create a vertex array object (attribute state)
+        var vao = gl.createVertexArray();
+
+        // and make it the one we are currently working with
+        gl.bindVertexArray(vao);
+
+        // Create a buffer and put a single pixel space rectangle in
+        // it (2 triangles)
+        var positionBuffer = gl.createBuffer();
+
+        // Turn on the attribute
+        gl.enableVertexAttribArray(positionAttributeLocation);
+
+        // Bind it to ARRAY_BUFFER (think of it as ARRAY_BUFFER = positionBuffer)
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+
+        // Tell the attribute how to get data out of positionBuffer (ARRAY_BUFFER)
+        var size = 2; // 2 components per iteration
+        var type = gl.FLOAT; // the data is 32bit floats
+        var normalize = false; // dont normalize the data
+        var stride = 0; // 0 = move forward size * sizeof(type) each iteration to get the next position
+        var offset = 0; // start at the beginning of the buffer
+        gl.vertexAttribPointer(
+          positionAttributeLocation,
+          size,
+          type,
+          normalize,
+          stride,
+          offset
+        );
+
+        // provide texture coordinates for the rectangle.
+        var texCoordBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+        gl.bufferData(
+          gl.ARRAY_BUFFER,
+          new Float32Array([
+            0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0,
+          ]),
+          gl.STATIC_DRAW
+        );
+
+        // Turn on the attribute
+        gl.enableVertexAttribArray(texCoordAttributeLocation);
+
+        // Tell the attribute how to get data out of texCoordBuffer (ARRAY_BUFFER)
+        var size = 2; // 2 components per iteration
+        var type = gl.FLOAT; // the data is 32bit floats
+        var normalize = false; // dont normalize the data
+        var stride = 0; // 0 = move forward size * sizeof(type) each iteration to get the next position
+        var offset = 0; // start at the beginning of the buffer
+        gl.vertexAttribPointer(
+          texCoordAttributeLocation,
+          size,
+          type,
+          normalize,
+          stride,
+          offset
+        );
+
+        // Create a texture.
+        var texture = gl.createTexture();
+
+        // make unit 0 the active texture uint
+        // (ie, the unit all other texture commands will affect
+        gl.activeTexture(gl.TEXTURE0 + 0);
+
+        // Bind it to texture unit 0s 2D bind point
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+
+        // Set the parameters so we dont need mips and so we are not filtering
+        // and we dont repeat at the edges
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+        // Upload the image into the texture.
+        var mipLevel = 0; // the largest mip
+        var internalFormat = gl.RGBA; // format we want in the texture
+        var srcFormat = gl.RGBA; // format of data we are supplying
+        var srcType = gl.UNSIGNED_BYTE; // type of data we are supplying
+        gl.texImage2D(
+          gl.TEXTURE_2D,
+          mipLevel,
+          internalFormat,
+          srcFormat,
+          srcType,
+          image
+        );
+
+        var lastTime = 0;
+        function drawScene(time) {
+          time *= 0.001;
+          // Subtract the previous time from the current time
+          var deltaTime = time - lastTime;
+          // Remember the current time for the next frame.
+          lastTime = time;
+
+          resizeCanvasToDisplaySize(gl.canvas);
+
+          // Tell WebGL how to convert from clip space to pixels
+          gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+          // Clear the canvas
+          gl.clearColor(0, 0, 0, 0);
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+          // Tell it to use our program (pair of shaders)
+          gl.useProgram(program);
+
+          // Bind the attribute/buffer set we want.
+          gl.bindVertexArray(vao);
+
+          // Pass in the canvas resolution so we can convert from
+          // pixels to clipspace in the shader
+          gl.uniform2f(resolutionLocation, gl.canvas.width, gl.canvas.height);
+
+          // Pass in time
+          gl.uniform1f(timeLocation, time);
+
+          // Tell the shader to get the texture from texture unit 0
+          gl.uniform1i(imageLocation, 0);
+
+          // Bind the position buffer so gl.bufferData that will be called
+          // in setRectangle puts data in the position buffer
+          gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+
+          // Set a rectangle the same size as the image.
+          setRectangle(gl, 0, 0, image.width, image.height, canvas.width, canvas.height);
+
+          // Draw the rectangle.
+          var primitiveType = gl.TRIANGLES;
+          var offset = 0;
+          var count = 6;
+          gl.drawArrays(primitiveType, offset, count);
+
+          // Call drawScene again next frame
+          requestAnimationFrame(drawScene);
+        }
+
+        requestAnimationFrame(drawScene);
+      }
+
+      function setRectangle(gl, x, y, imageWidth, imageHeight, canvasWidth, canvasHeight) {
+        // preserve aspect ratio of image but otherwise fill entire canvas
+        var aspectRatio = imageWidth / imageHeight;
+        var height = canvasHeight;
+        var width = height * aspectRatio;
+        if(width > canvasWidth) {
+          width = canvasWidth;
+          height = width / aspectRatio;
+        }
+        var x1 = x;
+        var x2 = x + width;
+        var y1 = y;
+        var y2 = y + height;
+        gl.bufferData(
+          gl.ARRAY_BUFFER,
+          new Float32Array([x1, y1, x2, y1, x1, y2, x1, y2, x2, y1, x2, y2]),
+          gl.STATIC_DRAW
+        );
+      }
+
+      const uri2url = (uri) => {
+        if (uri.startsWith(`ipfs://`)) {
+          return uri.replace(`ipfs://`, `https://ipfs.io/ipfs/`);
+        }
+        return uri;
+      };
+      const TOKEN_URI = `ipfs://QmeSjSinHpPnmXmspMjwiXyN6zS4E9zccariGR3jxcaWtq/1220`;
+      var image = new Image();
+      fetch(uri2url(TOKEN_URI))
+        .then((res) => res.json())
+        .then((metadata) => {
+          return new Promise((resolve) => {
+            const imageUrl = uri2url(metadata.image);
+            image.crossOrigin = "anonymous"; // need to ask for cors permission https://webglfundamentals.org/webgl/lessons/webgl-cors-permission.html
+            image.src = imageUrl;
+            image.onload = function () {
+              resolve(image);
+            };
+          });
+        })
+        .then((image) => {
+          render(image);
+        })
+        .catch((err) => console.error(err));
+    </script>
+  </body>
+</html>

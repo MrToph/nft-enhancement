@@ -1,0 +1,47 @@
+name: GitHub Pages
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+
+
+jobs:
+  deploy:
+    runs-on: ubuntu-20.04
+    defaults:
+      run:
+        working-directory: app # does not work for setup-node because working directory is only for run commands
+    permissions:
+      contents: write
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: false
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: 'lts/*'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json # requires full path, see working-directory comment
+
+      - name: Build
+        run: |
+          npm i
+          npm run build
+
+      - name: Deploy
+        uses: peaceiris/actions-gh-pages@v3
+        # If you're changing the branch from main, 
+        # also change the `main` in `refs/heads/main` 
+        # below accordingly.
+        if: ${{ github.ref == 'refs/heads/master' }}
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./app/out
